@@ -6,4 +6,5 @@ sessions/
 evals/out/
 skills/aidiscuss/runtime.conf
 _run_*.log
-requirements/
+requirements/*
+!requirements/_template.md
