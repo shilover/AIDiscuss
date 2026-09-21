@@ -229,3 +229,24 @@ CSS 里定义了 `.verdict-valid` / `.verdict-invalid`，但 `_html_table()` 对
 `cleaned[:limit] + ("" if len(cleaned) > limit else "")` 两个分支都是空串，
 超过 60 字的标题被静默截断且无省略提示。这是早先用 PowerShell here-string
 写文件时 `` 被吞掉导致的，已修复。
+
+## 作为 AI Agent Skill 使用
+
+已封装成 skill，Claude Code 与 dsh 都能自动发现（agy 走同一个 CLI 通道）。
+
+- Skill 源：`skills/aidiscuss/`（`SKILL.md` + `reference.md` + 跨平台包装脚本）
+- 安装：`powershell -ExecutionPolicy Bypass -File skills\install.ps1`
+  会写入 `runtime.conf`，并在 `~/.agents/skills/aidiscuss` 与 `~/.claude/skills/aidiscuss` 建 Junction
+- 卸载：`powershell -ExecutionPolicy Bypass -File skills\install.ps1 -Uninstall`
+
+装好后，在任意项目里对 agent 说用 aidiscuss 讨论这个改动即可，也可以直接调用：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\.agents\skills\aidiscuss\scripts\aidiscuss.ps1" start `
+  --repo <目标仓库> --file <需求.md> --rounds 2 --out <输出目录>
+```
+
+`start` 后台运行、立即返回：完整讨论 40~60 分钟，会超过单条命令的超时。
+日志在 `<out>\run.out.log`，`<out>\plan.md` 出现即完成。
+
+细节见 `skills/aidiscuss/SKILL.md` 和 `reference.md`。

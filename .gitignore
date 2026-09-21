@@ -4,3 +4,4 @@ __pycache__/
 .env
 sessions/
 evals/out/
+skills/aidiscuss/runtime.conf
