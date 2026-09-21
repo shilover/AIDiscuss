@@ -19,4 +19,5 @@ powershell -ExecutionPolicy Bypass -File skills\install.ps1   # 安装 skill
 - CLI 入口强制 UTF-8 控制台输出。
 - `.env` 控制模型传输与角色分配，参考 `.env.example`；`ROLE_*` 只能填注册表里的别名。
 - 改动 CLI / 编排 / 渲染后跑一次 `evals\smoke_test.py`。
+- 所有使用说明（安装、命令、模板用法、排障）统一写进 `README.md`，不要另建说明文档。
 - 本工具只产出方案，不改目标仓库的代码。

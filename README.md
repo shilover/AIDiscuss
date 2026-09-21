@@ -126,6 +126,94 @@ cd D:\UEProject\AIDiscuss
 | `judgment.json` | 裁决原始结果 |
 | `meta.json` | 需求与仓库信息 |
 
+## 需求文档
+
+`requirements/_template.md` 是需求文档模板（只含格式，无具体内容）。用法：
+
+```powershell
+Copy-Item requirements\_template.md requirements\my-feature.md
+```
+
+填好后作为 `--file` 传给 `discuss`。模板的小节顺序对应多模型讨论的关注点，
+其中「已经完成、不要重做的」和「已被否决、不要再提的路线」两节能显著减少
+重复调研和绕路，建议认真填写。
+
+`requirements/*` 默认被 git 忽略（只保留模板），因此真实需求文档不会被误提交。
+
+## 作为 AI Agent Skill 使用
+
+项目封装成了标准 Agent Skill（`SKILL.md` 格式），Claude Code 与 dsh 都能自动发现；
+`agy` 无需单独安装 skill，它作为模型通道被 AIDiscuss 调用。
+
+### 安装 / 卸载
+
+```powershell
+powershell -ExecutionPolicy Bypass -File skills\install.ps1              # 安装
+powershell -ExecutionPolicy Bypass -File skills\install.ps1 -Uninstall  # 卸载
+```
+
+安装脚本会：
+
+1. 写入 `skills/aidiscuss/runtime.conf`（记录项目根与解释器路径）
+2. 在 `~/.agents/skills/aidiscuss` 与 `~/.claude/skills/aidiscuss` 建立 Junction，指向本仓库的 skill 源目录
+
+因为是 Junction，改 `skills/aidiscuss/` 下的任何文件立即生效，无需重新安装。
+
+### 调用
+
+装好后在任意项目里对 agent 说「用 aidiscuss 讨论这个改动」即可，也可以直接跑：
+
+```powershell
+# 体检（可选，1~3 分钟）
+powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\.agents\skills\aidiscuss\scripts\aidiscuss.ps1" doctor
+
+# 后台启动讨论
+powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\.agents\skills\aidiscuss\scripts\aidiscuss.ps1" start `
+  --repo <目标仓库> --file <需求.md> --rounds 2 --out <输出目录>
+```
+
+Git Bash / WSL：
+
+```bash
+"$HOME/.agents/skills/aidiscuss/scripts/aidiscuss.sh" start \
+  --repo /c/path/to/repo --file /c/path/to/req.md --rounds 2 --out /c/path/to/out
+```
+
+包装脚本的子命令：
+
+| 子命令 | 说明 |
+| --- | --- |
+| `doctor` | 真实调用每个端点做连通性体检 |
+| `models` | 查看角色 -> 模型 -> 传输的分配 |
+| `config` | 打印解析到的项目根、解释器、配置文件路径（排障用） |
+| `discuss` | 前台执行讨论 |
+| `start` | 后台执行讨论并立即返回（必须给 `--out`） |
+
+### 为什么用 `start`
+
+完整讨论 `--rounds 3` 约 40~60 分钟，远超单条命令的超时。`start` 把讨论放到后台并立即返回：
+
+- 日志：`<out>\run.out.log`、`<out>\run.err.log`（UTF-8）
+- 完成标志：`<out>\plan.md` 出现
+- 轮询时分次检查即可，不要用死循环阻塞
+
+### 排障
+
+| 现象 | 处理 |
+| --- | --- |
+| 找不到项目根 | 设置环境变量 `AIDISCUSS_HOME`，或重跑 `install.ps1` 刷新 `runtime.conf` |
+| `agy` 找不到 | 项目会自动尝试 `~/.gemini\bin\agy.exe`，一般无需处理 |
+| 某角色持续失败 | 改 `.env` 里的 `ROLE_*` 换别名 |
+| 讨论中断 | 读 `<out>\run.err.log`，把错误原文反馈出来，不要反复重试 |
+
+## Windows 环境注意事项
+
+- 本机只有 **Windows PowerShell 5.1**，没有 `pwsh`；命令一律用 `powershell`，
+  包装脚本内部在有 `pwsh` 时会优先使用它。
+- `.ps1` 文件必须保存为 **UTF-8 with BOM**，否则 PS 5.1 会按 GBK 解析中文，直接语法报错。
+- CLI 入口已强制 UTF-8 控制台输出；用 PowerShell 读日志或文件时建议加 `-Encoding UTF8`。
+- `dsh` / `agy` 的 Windows 启动器会丢引号，项目内部已绕过（走 `node lib/bin.js` 与临时文件）。
+
 ## 目录结构
 
 ```
@@ -140,8 +228,17 @@ app/
   render.py        Markdown + HTML 方案渲染
 evals/
   smoke_test.py    无需任何模型调用的端到端冒烟测试
+skills/
+  install.ps1      安装/卸载 skill 到各 agent 的 skill 目录
+  aidiscuss/
+    SKILL.md       Agent Skill 主文件
+    reference.md   参数、角色、产物、故障排查
+    runtime.conf   项目根与解释器路径（install.ps1 生成，已 gitignore）
+    scripts/       跨平台包装脚本（ps1 / cmd / sh）
+requirements/
+  _template.md     需求文档模板（真实需求文档默认被 gitignore）
+AGENTS.md          项目级 agent 约定（PowerShell 5.1、UTF-8 BOM 等）
 ```
-
 ## 测试
 
 ```powershell
@@ -229,24 +326,3 @@ CSS 里定义了 `.verdict-valid` / `.verdict-invalid`，但 `_html_table()` 对
 `cleaned[:limit] + ("" if len(cleaned) > limit else "")` 两个分支都是空串，
 超过 60 字的标题被静默截断且无省略提示。这是早先用 PowerShell here-string
 写文件时 `` 被吞掉导致的，已修复。
-
-## 作为 AI Agent Skill 使用
-
-已封装成 skill，Claude Code 与 dsh 都能自动发现（agy 走同一个 CLI 通道）。
-
-- Skill 源：`skills/aidiscuss/`（`SKILL.md` + `reference.md` + 跨平台包装脚本）
-- 安装：`powershell -ExecutionPolicy Bypass -File skills\install.ps1`
-  会写入 `runtime.conf`，并在 `~/.agents/skills/aidiscuss` 与 `~/.claude/skills/aidiscuss` 建 Junction
-- 卸载：`powershell -ExecutionPolicy Bypass -File skills\install.ps1 -Uninstall`
-
-装好后，在任意项目里对 agent 说用 aidiscuss 讨论这个改动即可，也可以直接调用：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\.agents\skills\aidiscuss\scripts\aidiscuss.ps1" start `
-  --repo <目标仓库> --file <需求.md> --rounds 2 --out <输出目录>
-```
-
-`start` 后台运行、立即返回：完整讨论 40~60 分钟，会超过单条命令的超时。
-日志在 `<out>\run.out.log`，`<out>\plan.md` 出现即完成。
-
-细节见 `skills/aidiscuss/SKILL.md` 和 `reference.md`。
