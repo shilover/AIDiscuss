@@ -5,3 +5,5 @@ __pycache__/
 sessions/
 evals/out/
 skills/aidiscuss/runtime.conf
+_run_*.log
+requirements/
