@@ -190,8 +190,17 @@ def index_counterexamples(history: list[Any]) -> list[dict[str, Any]]:
     return items
 
 
-def render_history(history: list[Any]) -> str:
-    """兼容 Speech / SkepticReport 两种历史条目。"""
+def render_history(
+    history: list[Any], *, budget_chars: int | None = None
+) -> str:
+    """兼容 Speech / SkepticReport 两种历史条目。
+
+    budget_chars 非空且渲染结果超预算时，从**最早**的发言开始整条丢弃，
+    直到装下为止（不截断单条，避免把一条发言切一半反而更难读）。
+    反例编号 CE-N 在裁剪前就已生成，因此保留下来的发言编号不会错位。
+    """
+    if budget_chars is not None and budget_chars <= 0:
+        budget_chars = None
     indexed: dict[int, list[dict[str, Any]]] = {}
     for entry in index_counterexamples(history):
         indexed.setdefault(entry["speech_index"], []).append(entry)
@@ -210,7 +219,28 @@ def render_history(history: list[Any]) -> str:
         if len(lines) == 1:
             lines.append("  （无）")
         blocks.append("\n".join(lines))
-    return "\n\n".join(blocks) if blocks else "（暂无发言）"
+    if not blocks:
+        return "（暂无发言）"
+    text = "\n\n".join(blocks)
+    if budget_chars is None or len(text) <= budget_chars:
+        return text
+
+    kept: list[str] = []
+    used = 0
+    for block in reversed(blocks):
+        if kept and used + len(block) > budget_chars:
+            break
+        kept.append(block)
+        used += len(block)
+    kept.reverse()
+    omitted = len(blocks) - len(kept)
+    if omitted <= 0:
+        return text
+    note = (
+        f"（为控制上下文，已省略最早的 {omitted} 条发言，"
+        f"仅保留最近 {len(kept)} 条；被省略发言的反例编号仍会出现在最终判定表里）"
+    )
+    return note + "\n\n" + "\n\n".join(kept)
 
 
 def build_user_prompt(

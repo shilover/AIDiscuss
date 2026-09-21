@@ -56,6 +56,23 @@ def _speeches(history: list, role: str) -> list[Speech]:
     return [h for h in history if isinstance(h, Speech) and h.role == role]
 
 
+def _latest_per_role(history: list) -> list:
+    """每个角色只保留**最后一次**发言（最终立场），其余条目原样保留。
+
+    交叉质询里同一个角色每轮都会重述并细化立场，前三轮全量堆进方案会明显臃肿。
+    只取最后一次不需要知道轮次边界，模型调用失败导致某轮缺条目也不会错位。
+    """
+    latest: dict[str, int] = {}
+    for index, item in enumerate(history):
+        if isinstance(item, Speech):
+            latest[item.role] = index
+    return [
+        item
+        for index, item in enumerate(history)
+        if not isinstance(item, Speech) or latest.get(item.role) == index
+    ]
+
+
 def _claim_rows(speeches: list[Speech]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     seen: set[str] = set()
@@ -182,11 +199,14 @@ def render_markdown(
     judgment: Judgment,
     unresolved: list[str],
     roles: dict[str, str] | None = None,
+    include_minutes: bool = False,
+    plan_scope: str = "latest",
 ) -> str:
-    architect = _speeches(history, "architect")
-    implementer = _speeches(history, "implementer")
-    tester = _speeches(history, "tester")
-    risks, questions = _collect(history)
+    scoped = history if plan_scope == "all" else _latest_per_role(list(history))
+    architect = _speeches(scoped, "architect")
+    implementer = _speeches(scoped, "implementer")
+    tester = _speeches(scoped, "tester")
+    risks, questions = _collect(scoped)
 
     rows = _counterexample_rows(history, judgment)
     ce_lines = []
@@ -202,6 +222,21 @@ def render_markdown(
         f"| {d.issue} | {d.decision} | {d.reason} | {d.overruled or ''} |"
         for d in judgment.decisions
     ) or "|  |  |  |  |"
+
+    scope_note = (
+        "> 第 2~4 节的发言按「每个角色只保留最终立场」呈现；逐轮完整记录见 `transcript.jsonl`。"
+        if plan_scope != "all"
+        else "> 第 2~4 节包含所有轮次的发言；逐轮机器可读记录见 `transcript.jsonl`。"
+    )
+
+    if include_minutes:
+        minutes_block = f"## 附录 B：讨论纪要\n\n{render_history(list(history))}"
+    else:
+        minutes_block = (
+            "## 附录 B：讨论纪要\n\n"
+            "（默认不重复输出：完整发言见同目录 `transcript.jsonl`；"
+            "需要写进方案时加 `--with-minutes`）"
+        )
 
     return f"""# 代码方案：{_title(requirement)}
 
@@ -255,14 +290,13 @@ def render_markdown(
 
 {_bullets(list(unresolved) + list(judgment.open_questions))}
 
+{scope_note}
+
 ## 附录 A：讨论中提出的问题
 
 {_bullets(questions)}
 
-## 附录 B：讨论纪要
-
-{render_history(list(history))}
-
+{minutes_block}
 
 ---
 *由 AIDiscuss 多模型讨论生成，仅供参考，落地前请人工评审。*
@@ -386,12 +420,15 @@ def render_html(
     judgment: Judgment,
     unresolved: list[str],
     roles: dict[str, str] | None = None,
+    include_minutes: bool = False,
+    plan_scope: str = "latest",
 ) -> str:
     """生成单文件 HTML：样式内联、可离线打开、与 Markdown 版同数据源。"""
-    architect = _speeches(history, "architect")
-    implementer = _speeches(history, "implementer")
-    tester = _speeches(history, "tester")
-    risks, questions = _collect(history)
+    scoped = history if plan_scope == "all" else _latest_per_role(list(history))
+    architect = _speeches(scoped, "architect")
+    implementer = _speeches(scoped, "implementer")
+    tester = _speeches(scoped, "tester")
+    risks, questions = _collect(scoped)
 
     title = _title(requirement)
 
@@ -451,9 +488,13 @@ def render_html(
         "<h2>附录 A：讨论中提出的问题</h2>",
         _html_bullets(questions),
         "<h2>附录 B：讨论纪要</h2>",
-        "<details><summary>展开完整讨论纪要</summary><pre>"
-        + _esc(render_history(list(history)))
-        + "</pre></details>",
+        (
+            "<details><summary>展开完整讨论纪要</summary><pre>"
+            + _esc(render_history(list(history)))
+            + "</pre></details>"
+            if include_minutes
+            else "<p>（默认不重复输出：完整发言见同目录 <code>transcript.jsonl</code>）</p>"
+        ),
         "<footer>由 AIDiscuss 多模型讨论生成，仅供参考，落地前请人工评审。</footer>",
     ]
 

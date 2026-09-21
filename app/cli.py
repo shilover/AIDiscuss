@@ -52,6 +52,23 @@ def discuss(
     no_scout: bool = typer.Option(
         False, "--no-scout", help="跳过 LLM 选文件，只用关键词检索"
     ),
+    resume: Optional[Path] = typer.Option(
+        None, "--resume", help="从已有会话目录续跑（读它的 state.json，忽略 --requirement/--repo）"
+    ),
+    context_budget: Optional[int] = typer.Option(
+        None, "--context-budget", help="材料包字符预算；默认取 AIDISCUSS_CONTEXT_BUDGET 或 60000"
+    ),
+    history_budget: Optional[int] = typer.Option(
+        None, "--history-budget", help="交叉质询/主持人可见的历史字符预算；0=不限制"
+    ),
+    with_minutes: bool = typer.Option(
+        False, "--with-minutes", help="把完整讨论纪要也写进 plan（默认不写，只留 transcript.jsonl）"
+    ),
+    plan_scope: str = typer.Option(
+        "latest",
+        "--plan-scope",
+        help="方案第2~4节取哪些发言：latest=每个角色只取最终立场；all=所有轮次",
+    ),
 ) -> None:
     """针对一个功能改动，组织多个模型讨论并产出落地方案。"""
     models = _boot()
@@ -59,14 +76,28 @@ def discuss(
     text = requirement
     if file:
         text = Path(file).read_text(encoding="utf-8-sig")
-    if not text.strip():
-        console.print("[red]必须提供 --requirement 或 --file[/red]")
+    if plan_scope not in ("all", "latest"):
+        console.print(f"[red]--plan-scope 只能是 all 或 latest，收到: {plan_scope}[/red]")
+        raise typer.Exit(code=2)
+
+    if not text.strip() and resume is None:
+        console.print("[red]必须提供 --requirement 或 --file（或 --resume）[/red]")
         raise typer.Exit(code=2)
 
     repo_path = Path(repo).resolve()
-    if not repo_path.is_dir():
+    if resume is None and not repo_path.is_dir():
         console.print(f"[red]仓库路径不存在: {repo_path}[/red]")
         raise typer.Exit(code=2)
+
+    if resume is not None:
+        resume = resume.resolve()
+        has_state = (resume / "state.json").is_file()
+        has_transcript = (resume / "transcript.jsonl").is_file()
+        if not has_state and not has_transcript:
+            console.print(
+                f"[red]续跑目录里既没有 state.json 也没有 transcript.jsonl: {resume}[/red]"
+            )
+            raise typer.Exit(code=2)
 
     roles = build_roles()
     used = [models[alias] for alias in roles.values() if alias in models]
@@ -100,6 +131,11 @@ def discuss(
             max_rounds=rounds,
             out_dir=out,
             use_scout=not no_scout,
+            resume_dir=resume,
+            context_budget=context_budget,
+            history_budget=history_budget,
+            include_minutes=with_minutes,
+            plan_scope=plan_scope,
         )
     )
 

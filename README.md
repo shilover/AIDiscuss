@@ -74,6 +74,11 @@ cd D:\UEProject\AIDiscuss
 | `--rounds` | 3 | 最大讨论轮次（1~6） |
 | `--out` | `sessions/` | 输出目录 |
 | `--no-scout` | 关 | 跳过 LLM 选文件，只用关键词检索 |
+| `--resume` |  | 从已有会话目录续跑（读它的 `state.json`） |
+| `--context-budget` | `AIDISCUSS_CONTEXT_BUDGET` / 60000 | 材料包字符预算 |
+| `--history-budget` | `AIDISCUSS_HISTORY_BUDGET` / 40000 | 交叉质询历史字符预算，0=不限制 |
+| `--with-minutes` | 关 | 把完整讨论纪要也写进方案（默认不写，纪要留在 `transcript.jsonl`） |
+| `--plan-scope` | `latest` | 方案第 2~4 节的发言范围：`latest`=每个角色只取最终立场，`all`=所有轮次 |
 
 ## 工作流程
 
@@ -85,6 +90,38 @@ cd D:\UEProject\AIDiscuss
 第2+轮：交叉质询 → 主持人判断收敛
       
 裁决(judge) → 渲染 Markdown 方案 → 落盘
+```
+
+**每轮结束都会落盘 `state.json` + `transcript.jsonl`**：中途任何一次调用失败
+（限流、超时、JSON 解析失败）都不会丢掉已经跑完的轮次。修复后直接
+`--resume <那次会话目录>` 续跑即可，已完成的轮次不会重跑。
+
+```powershell
+.\.venv\Scripts\python.exe -m app.cli discuss `
+  --repo D:\path\to\project --file requirement.md
+# 中途挂了  用日志里打印的会话目录续跑
+.\.venv\Scripts\python.exe -m app.cli discuss --resume sessions\20260921-133835_xxx
+```
+
+### 成本控制
+
+一次 `--rounds 3` 的讨论约 16~17 次模型调用，而**材料包会被塞进每一次调用**
+它是最大的成本来源。实测一次典型讨论输入合计约 90 万~130 万字符。
+
+| 手段 | 效果 |
+| --- | --- |
+| `--rounds 2`（甚至 1） | 角色调用成本 43% / 75% |
+| `--context-budget 30000` | 约 32% |
+| `--history-budget 20000` | 后期轮次的历史占用减半 |
+| 拆小需求，一次只讨论一个改动点 | 材料包更小，结论更聚焦 |
+| 默认不写讨论纪要（`--with-minutes` 才写） | 方案体积 51% |
+| `--plan-scope latest`（默认） | 方案体积再 46% |
+| `--no-scout` + proposer 侧用便宜模型 | 省一次调用，单价更低 |
+
+每次讨论结束会打印实际开销：
+
+```
+成本：17 次调用，输入合计 1,301,204 字符（system 10,214 + user 1,290,990）
 ```
 
 ## 防幻觉设计
@@ -121,7 +158,7 @@ cd D:\UEProject\AIDiscuss
 
 | 文件 | 内容 |
 | --- | --- |
-| `plan.md` | **最终方案**（Markdown）：结论、决策记录、改动清单、测试、风险、反例判定、保留意见、讨论纪要 |
+| `plan.md` | **最终方案**（Markdown）：结论、决策记录、改动清单、测试、风险、反例判定、保留意见（纪要默认不写入，见 `transcript.jsonl`） |
 | `plan.html` | 同上内容的**单文件 HTML**：内联样式、明暗主题自适应、可离线打开、可直接转发评审 |
 | `transcript.jsonl` | 全部发言（结构化），可回放 |
 | `context.md` | 本次使用的代码材料包 |
@@ -257,7 +294,8 @@ mock 掉模型调用，验证编排、引用校验、去重、渲染、落盘全
 ## 已知限制
 
 - 只出方案，不自动改代码
-- 上下文按字符预算截断，超大仓库可能漏掉相关文件（调 `context.py` 的 `budget_chars`）
+- 上下文按字符预算截断，超大仓库可能漏掉相关文件（调 `AIDISCUSS_CONTEXT_BUDGET`）
+- 历史按 `AIDISCUSS_HISTORY_BUDGET` 整条裁剪（从最早开始丢）；被裁掉的发言，其反例在最终判定表里会显示为 `unknown`
 - `skeptic` 反例跨轮次去重按文本归一化，**语义相同但措辞不同**的反例不会合并，会各占一行（judge 虽会在理由里指出「与 CE-x 是同一问题」，但不会自动合并）
 - 走 CLI 时无法控制 `temperature`
 - `agy` 的 `gpt-oss-120b` 偶发服务端容量不足（503）

@@ -1,4 +1,4 @@
-"""代码上下文：目录树、文件列表、关键词检索、片段读取、引用校验。"""
+﻿"""代码上下文：目录树、文件列表、关键词检索、片段读取、引用校验。"""
 from __future__ import annotations
 
 import os
@@ -38,8 +38,23 @@ TEXT_EXTS = {
     ".sh", ".ps1", ".bat", ".gradle", ".cmake", ".uproject", ".uplugin",
 }
 
-MAX_FILE_BYTES = 400_000
-MAX_SNIPPET_LINES = 160
+def _env_int(key: str, default: int) -> int:
+    """读取正整数环境变量；非法值回退默认。0 视为未设置。"""
+    raw = (os.environ.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+MAX_FILE_BYTES = _env_int("AIDISCUSS_MAX_FILE_BYTES", 400_000)
+# 每个文件读取的行数上界（大文件只读前 N 行）。调小省 token，但会丢内容。
+MAX_SNIPPET_LINES = _env_int("AIDISCUSS_SNIPPET_LINES", 160)
+# 材料包字符预算：会被塞进每一次模型调用，是最大的一块成本。
+CONTEXT_BUDGET_CHARS = _env_int("AIDISCUSS_CONTEXT_BUDGET", 60_000)
 
 EN_STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "from", "into", "when",
@@ -227,12 +242,19 @@ def build_context_pack(
     requirement: str,
     *,
     priority_files: list[str] | None = None,
-    budget_chars: int = 60_000,
+    budget_chars: int | None = None,
 ) -> str:
-    """组装讨论用的材料包：目录树 + 检索命中 + 重点文件片段。"""
-    tree = repo_tree(root)
+    """组装讨论用的材料包：目录树 + 检索命中 + 重点文件片段。
+
+    budget_chars 为 None 时取 AIDISCUSS_CONTEXT_BUDGET（默认 60000）。
+    """
+    if budget_chars is None:
+        budget_chars = CONTEXT_BUDGET_CHARS
+    # 目录树与关键词命中同样占预算，按预算等比缩放；
+    # 默认 60000 时折算结果与历史默认值（300 / 60）一致，行为不变。
+    tree = repo_tree(root, max_entries=max(60, budget_chars // 200))
     keywords = guess_keywords(requirement)
-    hits = grep(root, keywords)
+    hits = grep(root, keywords, max_hits=max(20, budget_chars // 1000))
 
     ordered: list[str] = []
     for rel in priority_files or []:

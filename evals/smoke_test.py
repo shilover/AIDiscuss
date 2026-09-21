@@ -6,7 +6,9 @@ r"""端到端冒烟测试：mock 掉模型调用，验证编排/校验/渲染/�
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -207,6 +209,111 @@ async def main() -> None:
     except Exception:  # noqa: BLE001
         isolated = False
     checks.append(("CE-8 写盘失败被隔离", isolated))
+
+    # ---------------- 新增：历史预算 ----------------
+    from app.prompts import render_history
+
+    long_hist = [
+        Speech(role="architect", proposal="A" * 500),
+        Speech(role="implementer", proposal="B" * 500),
+        Speech(role="tester", proposal="C" * 500),
+    ]
+    full = render_history(long_hist)
+    capped = render_history(long_hist, budget_chars=700)
+    checks += [
+        ("历史预算：不传时保持完整", "A" * 100 in full and "C" * 100 in full),
+        ("历史预算：超限时给出省略提示", "已省略最早的" in capped),
+        ("历史预算：保留最近的发言", "C" * 100 in capped),
+        ("历史预算：丢弃最早的发言", "A" * 100 not in capped),
+        ("历史预算：0 视为不限制", "A" * 100 in render_history(long_hist, budget_chars=0)),
+    ]
+
+    # ---------------- 新增：断点续跑 ----------------
+    resume_root = ROOT / "evals" / "out_resume"
+    _md1, dir1 = await orch.run_discussion(
+        repo=ROOT,
+        requirement="续跑自检",
+        models=models,
+        max_rounds=1,
+        out_dir=resume_root,
+        use_scout=False,
+    )
+    t1 = (dir1 / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    st1 = json.loads((dir1 / "state.json").read_text(encoding="utf-8"))
+    _md2, dir2 = await orch.run_discussion(
+        repo=ROOT,
+        requirement="",
+        models=models,
+        max_rounds=3,
+        out_dir=resume_root,
+        use_scout=False,
+        resume_dir=dir1,
+    )
+    t2 = (dir2 / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    checks += [
+        ("续跑：首轮后即落盘 state.json", (dir1 / "state.json").is_file()),
+        ("续跑：首轮 transcript=4 条", len(t1) == 4),
+        ("续跑：state 记录 rounds_done=1", st1.get("rounds_done") == 1),
+        ("续跑：续跑后 transcript=12 条", len(t2) == 12),
+        ("续跑：续跑到同一个会话目录", dir2 == dir1),
+        ("续跑：requirement 以 state 为准", "续跑自检" in dir2.name),
+        ("续跑：最终 plan.md 已生成", (dir2 / "plan.md").is_file()),
+    ]
+
+    # ---------------- 新增：旧会话（无 state.json）回填续跑 ----------------
+    legacy_root = ROOT / "evals" / "out_legacy"
+    shutil.rmtree(legacy_root, ignore_errors=True)
+    _mdl, dirl = await orch.run_discussion(
+        repo=ROOT,
+        requirement="旧会话回填自检",
+        models=models,
+        max_rounds=2,
+        out_dir=legacy_root,
+        use_scout=False,
+    )
+    legacy_transcript = len((dirl / "transcript.jsonl").read_text(encoding="utf-8").splitlines())
+    (dirl / "state.json").unlink()  # 模拟本次改动之前产生的旧目录
+    _mdl2, dirt = await orch.run_discussion(
+        repo=ROOT,
+        requirement="",
+        models=models,
+        max_rounds=2,
+        out_dir=legacy_root,
+        use_scout=False,
+        resume_dir=dirl,
+    )
+    legacy_after = len((dirt / "transcript.jsonl").read_text(encoding="utf-8").splitlines())
+    checks += [
+        ("旧会话：无 state.json 也能续跑", (dirt / "plan.md").is_file()),
+        ("旧会话：回填后不重复跑已有轮次", legacy_after == legacy_transcript == 8),
+        ("旧会话：续跑到同一个目录", dirt == dirl),
+    ]
+    shutil.rmtree(legacy_root, ignore_errors=True)
+
+    # ---------------- 新增：方案瘦身（默认不重复纪要 / 只取最终立场） ----------------
+    from app.render import render_markdown
+
+    hist_rows = []
+    for line in (session_dir / "transcript.jsonl").read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        hist_rows.append(SkepticReport(**row) if "counterexamples" in row else Speech(**row))
+    judgment_obj = Judgment(**json.loads((session_dir / "judgment.json").read_text(encoding="utf-8")))
+    md_full_minutes = render_markdown(
+        requirement="x", repo=ROOT, history=hist_rows, judgment=judgment_obj,
+        unresolved=[], include_minutes=True,
+    )
+    md_all_rounds = render_markdown(
+        requirement="x", repo=ROOT, history=hist_rows, judgment=judgment_obj,
+        unresolved=[], plan_scope="all",
+    )
+    checks += [
+        ("方案瘦身：默认不重复输出讨论纪要", "skeptic 反例清单" not in plan),
+        ("方案瘦身：指向 transcript.jsonl", "transcript.jsonl" in plan),
+        ("方案瘦身：标注只取最终立场", "只保留最终立场" in plan),
+        ("方案瘦身：--with-minutes 仍可带上纪要", "skeptic 反例清单" in md_full_minutes),
+        ("方案瘦身：plan_scope=all 标注为全轮次", "包含所有轮次" in md_all_rounds),
+        ("方案瘦身：默认方案比全量短", len(plan) < len(md_full_minutes)),
+    ]
 
     width = max(len(name) for name, _ in checks)
     failed = 0
